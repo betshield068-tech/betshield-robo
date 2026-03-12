@@ -3,26 +3,23 @@
 	"version": "1.0.0",
 	"type": "module",
 	"scripts": {
-		"bot": "ts-node src/main/worker.ts",
-		"web": "next dev src/web",
-		"build": "tsc",
-		"start": "node dist/main/worker.js",
-		"start": "pnpm exec tsx src/main/betshield-multigame.ts",
+		"dev": "tsx src/main/betshield-multigame.ts",
+		"start": "tsx src/main/betshield-multigame.ts",
+		"build": "tsc"
 	},
 	"dependencies": {
-		"@supabase/supabase-js": "^2.98.0",
-		"dotenv": "^17.3.1",
-		"mqtt": "^5.15.0",
-		"playwright": "^1.58.2",
+		"@supabase/supabase-js": "^2.45.0",
+		"dotenv": "^16.4.5",
+		"playwright": "^1.41.0",
 		"playwright-extra": "^4.3.6",
 		"puppeteer-extra-plugin-stealth": "^2.11.2",
-		"ws": "^8.19.0"
+		"ws": "^8.16.0"
 	},
 	"devDependencies": {
-		"@types/node": "^25.3.5",
-		"@types/ws": "^8.18.1",
+		"@types/node": "^20.11.0",
+		"@types/ws": "^8.5.10",
 		"ts-node": "^10.9.2",
-		"tsx": "^4.21.0",
-		"typescript": "^5.9.3"
+		"typescript": "^5.3.3",
+		"tsx": "^4.7.1"
 	}
 }
