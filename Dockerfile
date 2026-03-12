@@ -1,4 +1,5 @@
-FROM mcr.microsoft.com/playwright:v1.41.0-jammy
+# MUDANÇA AQUI: De v1.41.0 para v1.58.2
+FROM mcr.microsoft.com/playwright:v1.58.2-jammy
 
 WORKDIR /app
 
@@ -14,7 +15,7 @@ RUN pnpm install
 # Copia o resto do código
 COPY . .
 
-# Expõe as variáveis de ambiente (Railway as preenche automaticamente)
+# Expõe as variáveis de ambiente
 ENV NODE_ENV=production
 
 # Comando para rodar o robô
