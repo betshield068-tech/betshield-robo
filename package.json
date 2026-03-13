@@ -4,6 +4,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "tsx src/main/betshield-multigame.ts",
+		"scan": "tsx src/main/scanner-pro.ts",
 		"start": "tsx src/main/betshield-multigame.ts",
 		"build": "tsc"
 	},

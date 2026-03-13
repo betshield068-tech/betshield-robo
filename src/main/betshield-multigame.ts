@@ -18,14 +18,12 @@ const CONFIG = {
   user: process.env.BETFAST_USER || "",
   pass: process.env.BETFAST_PASS || "",
   homeUrl: "https://betfast.bet.br/",
-  baseStake: 5.0,
   maxMartingale: 12,
-  stopWin: 200.0,
   stopLoss: -500.0,
 };
 
 // ==========================================
-// 🛑 ADIÇÃO: ESTADO DE OPERAÇÃO EM TEMPO REAL
+// ESTADO DE OPERAÇÃO EM TEMPO REAL (DINÂMICO)
 // ==========================================
 const BotState = {
   killSwitch: false,
@@ -34,14 +32,19 @@ const BotState = {
     BACCARAT_HACKSAW: true,
     ROULETTE_PLAYTECH: true,
   },
+  specs: {
+    FOOTBALL_STUDIO: { stake: 5.0, target: 6 },
+    BACCARAT_HACKSAW: { stake: 5.0, target: 5 },
+    ROULETTE_PLAYTECH: { stake: 5.0, target: 8 },
+  },
   profit: 0,
+  stopWin: 200.0,
 };
 
-// Função para sincronizar as pausas do Dashboard em tempo real
+// Função para sincronizar Pausas, Kill Switch e Especificações em tempo real
 async function syncWithDashboard() {
   console.log("📡 Conectando Sincronizador Realtime com Dashboard...");
 
-  // 1. Busca estado inicial do banco
   const { data: config } = await supabase
     .from("CONFIGURACOES_BOT")
     .select("*")
@@ -49,7 +52,11 @@ async function syncWithDashboard() {
     .single();
   const { data: games } = await supabase.from("CONTROLE_JOGOS").select("*");
 
-  if (config) BotState.killSwitch = config.sn_kill_switch_global;
+  if (config) {
+    BotState.killSwitch = config.sn_kill_switch_global;
+    BotState.stopWin = Number(config.vl_stop_win || 0); // Corrigido de vl_stop_gain para vl_stop_win
+  }
+
   games?.forEach((g) => {
     const key =
       g.tp_jogo === "ROULETTE"
@@ -58,9 +65,27 @@ async function syncWithDashboard() {
           ? "BACCARAT_HACKSAW"
           : "FOOTBALL_STUDIO";
     BotState.activeGames[key] = g.sn_ativo;
+    BotState.specs[key] = {
+      stake: Number(g.vl_aposta_base),
+      target: Number(g.nr_sequencia_alvo),
+    };
   });
 
-  // 2. Escuta mudanças (cliques no Pausar/Play do Dashboard)
+  // --- LOG DE CONFIRMAÇÃO DE LEITURA DO BANCO ---
+  console.log("\n📊 [STATUS DO BANCO DE DADOS CARREGADO]");
+  console.log(
+    `   ⚙️  GLOBAL: Stop Win: R$ ${BotState.stopWin} | Kill Switch: ${BotState.killSwitch ? "🔴 ATIVADO" : "🟢 OFF"}`,
+  );
+  console.log(
+    `   ⚽ EVOLUTION : ${BotState.activeGames.FOOTBALL_STUDIO ? "ON" : "OFF"} | Base: R$ ${BotState.specs.FOOTBALL_STUDIO.stake} | Gatilho: ${BotState.specs.FOOTBALL_STUDIO.target}x`,
+  );
+  console.log(
+    `   🃏 HACKSAW   : ${BotState.activeGames.BACCARAT_HACKSAW ? "ON" : "OFF"} | Base: R$ ${BotState.specs.BACCARAT_HACKSAW.stake} | Gatilho: ${BotState.specs.BACCARAT_HACKSAW.target}x`,
+  );
+  console.log(
+    `   🎰 PLAYTECH  : ${BotState.activeGames.ROULETTE_PLAYTECH ? "ON" : "OFF"} | Base: R$ ${BotState.specs.ROULETTE_PLAYTECH.stake} | Gatilho: ${BotState.specs.ROULETTE_PLAYTECH.target}x\n`,
+  );
+
   supabase
     .channel("db_sync")
     .on(
@@ -68,8 +93,9 @@ async function syncWithDashboard() {
       { event: "UPDATE", table: "CONFIGURACOES_BOT" },
       (payload) => {
         BotState.killSwitch = payload.new.sn_kill_switch_global;
+        BotState.stopWin = Number(payload.new.vl_stop_win);
         console.log(
-          `⚠️ [DASHBOARD] Kill Switch Global: ${BotState.killSwitch ? "ATIVADO" : "DESATIVADO"}`,
+          `⚠️ [DASHBOARD] Configurações Globais Atualizadas. Stop Win: R$ ${BotState.stopWin}`,
         );
       },
     )
@@ -84,30 +110,25 @@ async function syncWithDashboard() {
               ? "BACCARAT_HACKSAW"
               : "FOOTBALL_STUDIO";
         BotState.activeGames[key] = payload.new.sn_ativo;
+        BotState.specs[key] = {
+          stake: Number(payload.new.vl_aposta_base),
+          target: Number(payload.new.nr_sequencia_alvo),
+        };
         console.log(
-          `🔄 [DASHBOARD] Módulo ${key}: ${payload.new.sn_ativo ? "PLAY ▶️" : "PAUSE ⏸️"}`,
+          `🔄 [DASHBOARD] ${key} Atualizado -> Ativo: ${payload.new.sn_ativo} | Base: R$ ${payload.new.vl_aposta_base} | Gatilho: ${payload.new.nr_sequencia_alvo}x`,
         );
       },
     )
     .subscribe();
 }
 
-// Gerenciador de Sessão Global (Soma os resultados das 3 abas)
+// Gerenciador de Sessão Global
 const SessionManager = {
-  profit: 0,
   isActive: true,
   checkStops: async (browserInstance: any) => {
-    if (SessionManager.profit >= CONFIG.stopWin) {
+    if (BotState.profit >= BotState.stopWin) {
       console.log(
-        `\n🏆 [META BATIDA] Stop Win atingido: R$ ${SessionManager.profit.toFixed(2)}! Encerrando robô.`,
-      );
-      SessionManager.isActive = false;
-      await browserInstance.close();
-      process.exit(0);
-    }
-    if (SessionManager.profit <= CONFIG.stopLoss) {
-      console.log(
-        `\n🛑 [STOP LOSS] Limite de perda atingido: R$ ${SessionManager.profit.toFixed(2)}. Encerrando robô.`,
+        `\n🏆 [META BATIDA] Stop Win atingido: R$ ${BotState.profit.toFixed(2)}!`,
       );
       SessionManager.isActive = false;
       await browserInstance.close();
@@ -122,28 +143,23 @@ const SessionManager = {
 const WindowManager = {
   baccaratPage: null as Page | null,
   isMouseBusy: false,
-
-  acquireLock: async (targetPage: Page, gameName: string) => {
-    while (WindowManager.isMouseBusy) {
+  acquireLock: async (targetPage: Page) => {
+    while (WindowManager.isMouseBusy)
       await new Promise((r) => setTimeout(r, 200));
-    }
     WindowManager.isMouseBusy = true;
     await targetPage.bringToFront();
     await targetPage.waitForTimeout(500);
   },
-
   releaseLock: async () => {
     WindowManager.isMouseBusy = false;
-    if (WindowManager.baccaratPage) {
+    if (WindowManager.baccaratPage)
       await WindowManager.baccaratPage.bringToFront();
-    }
   },
 };
 
 // ==========================================
 // 2. MAPEAMENTOS DE ALVOS (COORDENADAS)
 // ==========================================
-
 const EVOLUTION_TARGETS = {
   FOOTBALL_STUDIO: {
     url: "https://betfast.bet.br/br/casino/gamepage?gameid=5769",
@@ -159,15 +175,15 @@ const EVOLUTION_TARGETS = {
     },
   },
 };
-type EvoGameType = keyof typeof EVOLUTION_TARGETS;
 
 const HACKSAW_CANVAS_COORDS = {
-  intro: { x: 741, y: 693 },
-  player: { x: 643, y: 570 },
-  tie: { x: 818, y: 566 },
-  banker: { x: 1034, y: 570 },
-  confirmBet: { x: 194, y: 644 },
-  clear: { x: 884, y: 673 }, // <--- O NOVO BOTÃO DE LIMPEZA AQUI
+  intro: { x: 717, y: 682 }, // Centro inferior (Splash screen)
+  player: { x: 643, y: 570 }, // Botão PLAYER azul
+  banker: { x: 1034, y: 570 }, // Botão BANKER vermelho
+  confirm: { x: 194, y: 644 }, // Botão Verde "BET"
+  clear: { x: 884, y: 673 },
+  decrease: { x: 26, y: 643 }, // Seta esquerda (diminuir)
+  increase: { x: 240, y: 641 }, // Seta direita (aumentar)
 };
 
 class BaccaratLogic {
@@ -205,21 +221,19 @@ const PLAYTECH_COORDS = {
 // MOTOR 1: EVOLUTION (Football Studio)
 // ==========================================
 async function setupEvolutionGame(context: BrowserContext, browser: any) {
-  console.log(`🎮 [EVOLUTION] Inicializando Football Studio (Gatilho 6x)...`);
+  console.log(`🎮 [EVOLUTION] Inicializando motor...`);
   const page = await context.newPage();
   const detector = new MultigamePatternDetector();
   const gameConfig = EVOLUTION_TARGETS.FOOTBALL_STUDIO;
-
-  let isBetting = false;
-  let apostaAtiva: any = null;
-  let lastProcessedRound = "";
-  let martingaleStep = 0;
+  let isBetting = false,
+    apostaAtiva: any = null,
+    lastProcessedRound = "",
+    martingaleStep = 0;
 
   async function executeAction(side: "home" | "away", valor: number) {
     isBetting = true;
     try {
-      await WindowManager.acquireLock(page, "EVOLUTION");
-
+      await WindowManager.acquireLock(page);
       const numValor = parseFloat(valor.toString());
       const chip =
         gameConfig.chipCoords[numValor as keyof typeof gameConfig.chipCoords] ||
@@ -232,14 +246,13 @@ async function setupEvolutionGame(context: BrowserContext, browser: any) {
 
       await page.mouse.click(chip.x, chip.y, { delay: 120 });
       await page.waitForTimeout(500);
-
       const pos = side === "home" ? gameConfig.casa : gameConfig.visitante;
       for (let i = 0; i < cliques; i++) {
         await page.mouse.click(pos.x, pos.y, { delay: 150 });
         await page.waitForTimeout(100);
       }
       console.log(
-        `✅ [EVOLUTION] Aposta de R$${valor} injetada no ${side.toUpperCase()}.`,
+        `✅ [EVOLUTION] Aposta INJETADA: R$ ${valor} no ${side.toUpperCase()}`,
       );
     } catch (e: any) {
       console.error(`❌ [EVOLUTION] Erro no ataque:`, e.message);
@@ -254,25 +267,20 @@ async function setupEvolutionGame(context: BrowserContext, browser: any) {
   page.on("websocket", (ws) => {
     if (ws.url().includes("evo-games")) {
       ws.on("framereceived", async (payload) => {
-        // 🛑 TRAVA DE PAUSA: Se pausado ou kill switch ativo, ignora a rodada
         if (
           !SessionManager.isActive ||
           BotState.killSwitch ||
           !BotState.activeGames.FOOTBALL_STUDIO
         )
           return;
-
         const data = payload.payload.toString();
-
         if (data.includes("resolved")) {
           try {
             const cleanJson = data.substring(data.indexOf("{"));
             const msg = JSON.parse(cleanJson);
             const roundId = msg.args?.gameId || msg.id;
-
             if (!roundId || roundId === lastProcessedRound) return;
             lastProcessedRound = roundId;
-
             const rawWinner = msg.args?.result?.winner;
             if (rawWinner) {
               const mapped =
@@ -281,15 +289,13 @@ async function setupEvolutionGame(context: BrowserContext, browser: any) {
                   : rawWinner === "Tiger"
                     ? "away"
                     : "tie";
-
               if (mapped !== "tie") {
                 if (apostaAtiva) {
                   const isWin = apostaAtiva.lado === mapped;
                   const resultValue = isWin
                     ? apostaAtiva.valor
                     : apostaAtiva.valor * -1;
-                  SessionManager.profit += resultValue;
-
+                  BotState.profit += resultValue;
                   await supabase.from("HISTORICO_APOSTAS").insert({
                     tp_jogo: "FOOTBALL_STUDIO",
                     ds_resultado_mesa: mapped === "home" ? "C" : "V",
@@ -298,46 +304,41 @@ async function setupEvolutionGame(context: BrowserContext, browser: any) {
                     tp_status: isWin ? "WIN" : "LOSS",
                     vl_lucro_perda: resultValue,
                   });
-                  console.log(
-                    `💰 [EVOLUTION] ${isWin ? "WIN ✅" : "LOSS ❌"} | Lucro Global: R$ ${SessionManager.profit.toFixed(2)}`,
-                  );
-
                   await SessionManager.checkStops(browser);
-
                   if (isWin) {
                     martingaleStep = 0;
                     apostaAtiva = null;
                   } else {
                     martingaleStep++;
-                    if (martingaleStep > CONFIG.maxMartingale) {
-                      martingaleStep = 0;
-                      apostaAtiva = null;
-                    } else {
+                    if (martingaleStep <= CONFIG.maxMartingale) {
                       const novoValor =
-                        CONFIG.baseStake * Math.pow(2, martingaleStep);
+                        BotState.specs.FOOTBALL_STUDIO.stake *
+                        Math.pow(2, martingaleStep);
                       apostaAtiva.valor = novoValor;
+                      console.log(
+                        `🔁 [EVOLUTION] Gale ${martingaleStep}: Apostando R$ ${novoValor}`,
+                      );
                       await executeAction(apostaAtiva.lado, novoValor);
                       return;
+                    } else {
+                      martingaleStep = 0;
+                      apostaAtiva = null;
                     }
                   }
                 }
-
                 detector.addToHistory(mapped);
                 console.log(
                   `🎰 [EVOLUTION] Vencedor: ${mapped.toUpperCase()} | Histórico: [ ${detector.getHistory().join(" -> ")} ]`,
                 );
-
-                const trigger = detector.checkTrigger(6);
-
-                if (trigger.isMatch && !isBetting && !apostaAtiva) {
+                const alvo = BotState.specs.FOOTBALL_STUDIO.target;
+                const trigger = detector.checkTrigger(alvo);
+                if (trigger.isMatch && !apostaAtiva) {
+                  const base = BotState.specs.FOOTBALL_STUDIO.stake;
                   console.log(
-                    `🎯 [EVOLUTION] GATILHO DETECTADO (6x)! Preparando ataque...`,
+                    `🎯 [EVOLUTION] GATILHO ${alvo}X! Preparando tiro de R$ ${base} no oposto.`,
                   );
-                  apostaAtiva = {
-                    lado: trigger.target,
-                    valor: CONFIG.baseStake,
-                  };
-                  await executeAction(trigger.target as any, CONFIG.baseStake);
+                  apostaAtiva = { lado: trigger.target, valor: base };
+                  await executeAction(trigger.target as any, base);
                 }
               }
             }
@@ -346,35 +347,24 @@ async function setupEvolutionGame(context: BrowserContext, browser: any) {
       });
     }
   });
-
-  await page.goto(gameConfig.url);
-  await page.waitForTimeout(15000);
-
-  await WindowManager.acquireLock(page, "EVO_CLEANUP");
-  await page.mouse.click(1307, 59, { delay: 150 });
-  await WindowManager.releaseLock();
-
+  await page.goto(EVOLUTION_TARGETS.FOOTBALL_STUDIO.url);
   return page;
 }
 
 // ==========================================
-// MOTOR 2: HACKSAW (Baccarat - TELA MESTRE)
+// MOTOR 2: HACKSAW (Baccarat) - Versão de Produção Blindada
 // ==========================================
 async function setupHacksawBaccarat(context: BrowserContext, browser: any) {
   console.log("🛡️ [HACKSAW] Baccarat: Inicializando motor Mestre...");
   const page = await context.newPage();
   WindowManager.baccaratPage = page;
-
   const detector = new MultigamePatternDetector();
-  const gameUrl = "https://betfast.bet.br/br/casino/gamepage?gameid=25383";
+  let apostaAtiva: any = null,
+    martingaleStep = 0;
 
-  let gameFrame: any = null;
-  let apostaAtiva: any = null;
-  let martingaleStep = 0;
-
+  // --- ESCUTA RESPOSTAS DA PLATAFORMA ---
   page.on("response", async (res) => {
     if (res.url().includes("api/play/bet") && res.status() === 200) {
-      // 🛑 TRAVA DE PAUSA: Interrompe o scouting ou aposta real se pausado
       if (
         !SessionManager.isActive ||
         BotState.killSwitch ||
@@ -392,24 +382,34 @@ async function setupHacksawBaccarat(context: BrowserContext, browser: any) {
           event.bankerHand,
         );
 
+        // 1. GESTÃO DA APOSTA REAL (SE HOUVER)
         if (apostaAtiva && apostaAtiva.isScouting === false) {
+          if (winner === "tie") {
+            console.log(
+              `🤝 [HACKSAW] EMPATE! Repetindo tiro real de R$ ${apostaAtiva.valor}...`,
+            );
+            await page.waitForTimeout(3000);
+            await executeHacksawAction(
+              apostaAtiva.lado,
+              apostaAtiva.valor.toFixed(2),
+            );
+            return;
+          }
+
           const isWin = apostaAtiva.lado === winner;
           const resultValue = isWin
             ? apostaAtiva.valor
             : apostaAtiva.valor * -1;
-          SessionManager.profit += resultValue;
+          BotState.profit += resultValue;
 
           await supabase.from("HISTORICO_APOSTAS").insert({
-            tp_jogo: "BACCARAT_HACKSAW",
-            ds_resultado_mesa: winner === "home" ? "P" : "B",
+            tp_jogo: "BACCARAT",
+            ds_resultado_mesa: winner === "player" ? "P" : "B",
             ds_lado_aposta: apostaAtiva.lado === "home" ? "P" : "B",
             vl_aposta: apostaAtiva.valor,
             tp_status: isWin ? "WIN" : "LOSS",
             vl_lucro_perda: resultValue,
           });
-          console.log(
-            `💰 [HACKSAW] ${isWin ? "WIN ✅" : "LOSS ❌"} | Lucro Global: R$ ${SessionManager.profit.toFixed(2)}`,
-          );
 
           await SessionManager.checkStops(browser);
 
@@ -418,133 +418,236 @@ async function setupHacksawBaccarat(context: BrowserContext, browser: any) {
             apostaAtiva = null;
           } else {
             martingaleStep++;
-            if (martingaleStep > CONFIG.maxMartingale) {
-              martingaleStep = 0;
-              apostaAtiva = null;
-            } else {
-              const novoValor = CONFIG.baseStake * Math.pow(2, martingaleStep);
-              apostaAtiva.valor = novoValor;
+            if (martingaleStep <= CONFIG.maxMartingale) {
+              const novoValor =
+                BotState.specs.BACCARAT_HACKSAW.stake *
+                Math.pow(2, martingaleStep);
+              apostaAtiva = {
+                lado: apostaAtiva.lado,
+                valor: novoValor,
+                isScouting: false,
+              };
               console.log(
-                `🔁 [HACKSAW] Iniciando Gale ${martingaleStep} de R$${novoValor}`,
+                `🔁 [HACKSAW] GALE ${martingaleStep}: Alvo R$ ${novoValor}`,
               );
               await page.waitForTimeout(3000);
               await executeHacksawAction(
-                gameFrame,
                 apostaAtiva.lado,
                 novoValor.toFixed(2),
               );
               return;
+            } else {
+              martingaleStep = 0;
+              apostaAtiva = null;
             }
           }
         }
 
-        detector.addToHistory(winner);
-        console.log(
-          `🎰 [HACKSAW] RESULTADO: ${winner.toUpperCase()} | Histórico: [ ${detector.getHistory().join(" -> ")} ]`,
-        );
-
-        const trigger = detector.checkTrigger(5);
-
-        if (trigger.isMatch && !apostaAtiva) {
+        // 2. GESTÃO DO PADRÃO (CONSTRUÇÃO DE HISTÓRICO)
+        if (winner !== "tie") {
+          detector.addToHistory(winner === "player" ? "home" : "away");
           console.log(
-            `🎯 [HACKSAW] GATILHO DETECTADO (5x)! Atacando com R$ ${CONFIG.baseStake}`,
+            `🎰 [HACKSAW] ${winner.toUpperCase()} | Histórico: [ ${detector.getHistory().join(" -> ")} ]`,
           );
-          apostaAtiva = {
-            lado: trigger.target,
-            valor: CONFIG.baseStake,
-            isScouting: false,
-          };
-          await executeHacksawAction(
-            gameFrame,
-            trigger.target as any,
-            CONFIG.baseStake.toFixed(2),
-          );
-        } else if (!apostaAtiva) {
-          apostaAtiva = { isScouting: true };
-          await page.waitForTimeout(3000);
-          await executeHacksawAction(gameFrame, "home", "0.60");
+
+          const target = BotState.specs.BACCARAT_HACKSAW.target;
+          const trigger = detector.checkTrigger(target);
+
+          if (trigger.isMatch && !apostaAtiva) {
+            const stake = BotState.specs.BACCARAT_HACKSAW.stake;
+            console.log(
+              `🎯 [GATILHO] Atacando no ${trigger.target!.toUpperCase()} com R$ ${stake}`,
+            );
+            apostaAtiva = {
+              lado: trigger.target,
+              valor: stake,
+              isScouting: false,
+            };
+            await executeHacksawAction(trigger.target as any, stake.toFixed(2));
+          } else if (!apostaAtiva) {
+            apostaAtiva = { isScouting: true };
+            await page.waitForTimeout(3000);
+            const baseStake = BotState.specs.BACCARAT_HACKSAW.stake.toFixed(2);
+            await executeHacksawAction("home", baseStake);
+          }
+        } else {
+          if (!apostaAtiva) {
+            apostaAtiva = { isScouting: true };
+            const baseStake = BotState.specs.BACCARAT_HACKSAW.stake.toFixed(2);
+            await executeHacksawAction("home", baseStake);
+          }
         }
       } catch (err) {}
     }
   });
 
-  async function executeHacksawAction(
-    frame: any,
-    side: "home" | "away",
-    amount: string,
-  ) {
-    if (!frame) return;
-    try {
-      await WindowManager.acquireLock(page, "HACKSAW");
+  // =================================================================
+  // FUNÇÃO DE INJEÇÃO MECÂNICA COPIADA DO CÓDIGO FUNCIONAL
+  // =================================================================
+  async function executeHacksawAction(side: "home" | "away", amount: string) {
+    if (page.isClosed()) return;
 
+    try {
+      // OBRIGATÓRIO: Trava do mouse para não conflitar com a Roleta
+      await WindowManager.acquireLock(page);
+      await page.evaluate(() => window.scrollTo(0, 0));
+
+      const frame = page.frame({ url: /hacksawgaming/ });
+      if (!frame) return;
+
+      const targetVal = parseFloat(amount);
+
+      // 1. LER VALOR DA FICHA (No painel inferior)
+      const readBetAmount = async () => {
+        return await frame.evaluate(() => {
+          const el = document.querySelector("#BetAmountValue");
+          return el ? el.textContent?.replace(/[^\d.]/g, "") : "0";
+        });
+      };
+
+      // 2. LER TOTAL DA MESA (Fichas reais jogadas)
+      const readTotalAmount = async () => {
+        return await frame.evaluate(() => {
+          const el = document.querySelector("#TotalBetAmountValue");
+          return el ? el.textContent?.replace(/[^\d.]/g, "") : "0";
+        });
+      };
+
+      // 3. LIMPA MESA INICIAL (Garante que começa do zero)
+      console.log("🧹 [HACKSAW] Executando Limpeza da Mesa...");
+      // Tática de Clique Triplo no CLEAR (Mouse físico + Texto HTML + Canvas)
+      await page.mouse.click(
+        HACKSAW_CANVAS_COORDS.clear.x,
+        HACKSAW_CANVAS_COORDS.clear.y,
+        { delay: 150 },
+      );
+      await frame
+        .locator('button:has-text("CLEAR"), div:has-text("CLEAR")')
+        .first()
+        .click({ force: true, timeout: 500 })
+        .catch(() => {});
       await frame
         .click("#webgl", { position: HACKSAW_CANVAS_COORDS.clear, force: true })
         .catch(() => {});
-      await page.waitForTimeout(300);
 
-      const valSpan = frame.locator("#BetAmountValue");
-      const decBtn = frame.locator("#BetAmountDecrease");
-      const incBtn = frame.locator("#BetAmountIncrease");
+      await page.waitForTimeout(800); // 🕒 Tempo longo para animação das fichas sumindo
 
-      let current = (await valSpan.innerText()).replace("R$ ", "");
+      console.log(`💰 [AJUSTE] Buscando valor alvo: R$ ${targetVal}`);
+
       let safety = 0;
+      // 4. AJUSTA APENAS A FICHA NO PAINEL (Sem jogar na mesa)
+      while (safety < 80) {
+        const currentFicha = parseFloat((await readBetAmount()) || "0");
 
-      while (current !== amount && safety < 40) {
-        if (parseFloat(current) > parseFloat(amount)) {
-          await decBtn.click({ force: true });
-        } else {
-          await incBtn.click({ force: true });
+        if (Math.abs(currentFicha - targetVal) < 0.01) {
+          console.log(`   ✅ Ficha ajustada: R$ ${currentFicha}`);
+          break;
         }
-        await page.waitForTimeout(50);
-        current = (await valSpan.innerText()).replace("R$ ", "");
+
+        // --- TÁTICA DE CLIQUE DUPLO ---
+        if (currentFicha > targetVal) {
+          await frame
+            .locator("#BetAmountDecrease")
+            .click({ force: true, timeout: 500 })
+            .catch(() => {});
+          await frame
+            .click("#webgl", {
+              position: HACKSAW_CANVAS_COORDS.decrease,
+              force: true,
+            })
+            .catch(() => {});
+        } else {
+          await frame
+            .locator("#BetAmountIncrease")
+            .click({ force: true, timeout: 500 })
+            .catch(() => {});
+          await frame
+            .click("#webgl", {
+              position: HACKSAW_CANVAS_COORDS.increase,
+              force: true,
+            })
+            .catch(() => {});
+        }
+
+        await page.waitForTimeout(100);
         safety++;
       }
 
+      if (safety >= 80) throw new Error("Ajuste falhou após 80 tentativas.");
+
+      // 5. JOGA A FICHA NA MESA (UMA VEZ SÓ)
       const pos =
         side === "home"
           ? HACKSAW_CANVAS_COORDS.player
           : HACKSAW_CANVAS_COORDS.banker;
       await frame.click("#webgl", { position: pos, force: true });
-      await page.waitForTimeout(300);
-      await frame.click("#PlaceBetBtn", { force: true });
-    } catch (e: any) {
-      console.error("❌ [HACKSAW] Erro ao injetar aposta:", e.message);
+      await page.waitForTimeout(400); // Dá tempo do TotalBetAmount atualizar
+
+      // 6. COMPARA O TOTAL DA MESA COM O ALVO ANTES DE CONFIRMAR
+      const totalMesa = parseFloat((await readTotalAmount()) || "0");
+
+      if (Math.abs(totalMesa - targetVal) < 0.01) {
+        console.log(`   ✅ Total da mesa validado: R$ ${totalMesa}`);
+        await frame.click("#PlaceBetBtn", { force: true });
+        console.log(
+          `🚀 [EXECUÇÃO] Aposta de R$ ${amount} no ${side.toUpperCase()} realizada.`,
+        );
+      } else {
+        // SE DER ABORTADO: CLICA NO BOTAO DE CLEAR USANDO O MOUSE FÍSICO
+        console.log("🧹 [HACKSAW] Abortando e limpando fichas acumuladas...");
+        await page.mouse.click(
+          HACKSAW_CANVAS_COORDS.clear.x,
+          HACKSAW_CANVAS_COORDS.clear.y,
+          { delay: 150 },
+        );
+        await frame
+          .locator('button:has-text("CLEAR"), div:has-text("CLEAR")')
+          .first()
+          .click({ force: true, timeout: 500 })
+          .catch(() => {});
+        await frame
+          .click("#webgl", {
+            position: HACKSAW_CANVAS_COORDS.clear,
+            force: true,
+          })
+          .catch(() => {});
+
+        await page.waitForTimeout(500); // Tempo pra limpar a tela
+        throw new Error(
+          `Total da mesa (R$${totalMesa}) não bateu com alvo (R$${targetVal}). Abortado e Limpo.`,
+        );
+      }
+    } catch (err: any) {
+      console.error("❌ Falha na injeção:", err.message);
     } finally {
+      // OBRIGATÓRIO: Libera o mouse para as outras mesas voltarem a jogar
       await WindowManager.releaseLock();
     }
   }
 
-  await page.goto(gameUrl);
-  console.log("⏳ [HACKSAW] Aguardando motor WebGL...");
+  // --- INICIALIZAÇÃO DO JOGO ---
+  await page.goto("https://betfast.bet.br/br/casino/gamepage?gameid=25383");
 
-  const checkFrameInterval = setInterval(async () => {
-    if (!gameFrame) {
-      gameFrame = page.frames().find((f) => f.url().includes("hacksawgaming"));
-      if (gameFrame) {
-        clearInterval(checkFrameInterval);
-        console.log("✅ [HACKSAW] Jogo pronto. Clicando na Intro...");
+  const checkFrame = setInterval(async () => {
+    const frame = page.frames().find((f) => f.url().includes("hacksawgaming"));
+    if (frame && !apostaAtiva) {
+      clearInterval(checkFrame);
+      await page.waitForTimeout(20000); // Carregamento total
 
-        await WindowManager.acquireLock(page, "HACKSAW_INTRO");
-        await gameFrame
-          .click("#webgl", {
-            position: HACKSAW_CANVAS_COORDS.intro,
-            force: true,
-          })
-          .catch(() => {});
-        await page.waitForTimeout(2000);
-        await WindowManager.releaseLock();
+      await WindowManager.acquireLock(page);
+      await frame
+        .click("#webgl", { position: HACKSAW_CANVAS_COORDS.intro, force: true })
+        .catch(() => {});
+      await WindowManager.releaseLock();
 
-        apostaAtiva = { isScouting: true };
-        await executeHacksawAction(gameFrame, "home", "0.60");
-      }
+      console.log("🚀 Motor Hacksaw Pronto.");
+      apostaAtiva = { isScouting: true };
+
+      // Busca o valor base diretamente do estado sincronizado com o DB
+      const baseStake = BotState.specs.BACCARAT_HACKSAW.stake.toFixed(2);
+      await executeHacksawAction("home", baseStake);
     }
   }, 5000);
-
-  setInterval(async () => {
-    if (apostaAtiva && apostaAtiva.isScouting) {
-      await executeHacksawAction(gameFrame, "home", "0.60");
-    }
-  }, 25000);
 
   return page;
 }
@@ -553,16 +656,15 @@ async function setupHacksawBaccarat(context: BrowserContext, browser: any) {
 // MOTOR 3: PLAYTECH (Roulette)
 // ==========================================
 async function setupPlaytechRoulette(context: BrowserContext, browser: any) {
-  console.log("🛡️ [PLAYTECH] Roleta: Inicializando motor (Gatilho 8x)...");
+  console.log("🛡️ [PLAYTECH] Roleta: Inicializando motor...");
   const page = await context.newPage();
   const colorDetector = new MultigamePatternDetector();
   const parityDetector = new MultigamePatternDetector();
-
-  let isGameReady = false;
-  let isBetting = false;
-  let apostaAtiva: any = null;
-  let lastFoundNumber: string | null = null;
-  let martingaleStep = 0;
+  let isGameReady = false,
+    isBetting = false,
+    apostaAtiva: any = null,
+    lastFoundNumber: string | null = null,
+    martingaleStep = 0;
 
   async function executeRouletteStrike(
     target: keyof typeof PLAYTECH_COORDS.spots,
@@ -570,29 +672,30 @@ async function setupPlaytechRoulette(context: BrowserContext, browser: any) {
   ) {
     isBetting = true;
     try {
-      await WindowManager.acquireLock(page, "PLAYTECH");
-
+      await WindowManager.acquireLock(page);
+      const numValor = parseFloat(valor.toString());
       const chip =
         PLAYTECH_COORDS.chipCoords[
-          valor as keyof typeof PLAYTECH_COORDS.chipCoords
+          numValor as keyof typeof PLAYTECH_COORDS.chipCoords
         ] || PLAYTECH_COORDS.chipCoords[5];
       const cliques = PLAYTECH_COORDS.chipCoords[
-        valor as keyof typeof PLAYTECH_COORDS.chipCoords
+        numValor as keyof typeof PLAYTECH_COORDS.chipCoords
       ]
         ? 1
-        : Math.ceil(valor / 5);
+        : Math.ceil(numValor / 5);
 
       await page.mouse.click(chip.x, chip.y, { delay: 120 });
       await page.waitForTimeout(500);
-
       const pos = PLAYTECH_COORDS.spots[target];
       for (let i = 0; i < cliques; i++) {
         await page.mouse.click(pos.x, pos.y, { delay: 150 });
         await page.waitForTimeout(100);
       }
-      console.log(`✅ [PLAYTECH] Aposta cravada no ${target.toUpperCase()}`);
+      console.log(
+        `✅ [PLAYTECH] Aposta INJETADA: R$ ${valor} no ${target.toUpperCase()}`,
+      );
     } catch (e: any) {
-      console.error(`❌ [PLAYTECH] Erro no ataque:`, e.message);
+      console.error(`❌ [PLAYTECH] Erro:`, e.message);
     } finally {
       await WindowManager.releaseLock();
       setTimeout(() => {
@@ -603,7 +706,6 @@ async function setupPlaytechRoulette(context: BrowserContext, browser: any) {
 
   async function startMonitoring() {
     setInterval(async () => {
-      // 🛑 TRAVA DE PAUSA: Para a leitura de DOM se pausado
       if (
         isBetting ||
         !SessionManager.isActive ||
@@ -611,25 +713,19 @@ async function setupPlaytechRoulette(context: BrowserContext, browser: any) {
         !BotState.activeGames.ROULETTE_PLAYTECH
       )
         return;
-
       try {
         let currentText: string | null = null;
         const frames = page.frames();
-
         for (const f of frames) {
-          try {
-            const historyItem = f
-              .locator('[data-automation-locator="field.lastHistoryItem"]')
-              .first();
-            if ((await historyItem.count()) > 0) {
-              currentText = await historyItem.innerText({ timeout: 500 });
-              break;
-            }
-          } catch (innerErr) {}
+          const historyItem = f
+            .locator('[data-automation-locator="field.lastHistoryItem"]')
+            .first();
+          if ((await historyItem.count()) > 0) {
+            currentText = await historyItem.innerText({ timeout: 500 });
+            break;
+          }
         }
-
         const currentNumber = currentText?.trim();
-
         if (
           currentNumber &&
           currentNumber !== lastFoundNumber &&
@@ -638,21 +734,18 @@ async function setupPlaytechRoulette(context: BrowserContext, browser: any) {
           lastFoundNumber = currentNumber;
           const num = parseInt(currentNumber);
           if (isNaN(num)) return;
-
           const props = RouletteLogic.getProperties(num);
 
           if (apostaAtiva && isGameReady) {
-            const isWinColor =
-              apostaAtiva.tipo === "color" && apostaAtiva.lado === props.color;
-            const isWinParity =
-              apostaAtiva.tipo === "parity" &&
-              apostaAtiva.lado === props.parity;
-            const isWin = isWinColor || isWinParity;
+            const isWin =
+              (apostaAtiva.tipo === "color" &&
+                apostaAtiva.lado === props.color) ||
+              (apostaAtiva.tipo === "parity" &&
+                apostaAtiva.lado === props.parity);
             const resultValue = isWin
               ? apostaAtiva.valor
               : apostaAtiva.valor * -1;
-            SessionManager.profit += resultValue;
-
+            BotState.profit += resultValue;
             await supabase.from("HISTORICO_APOSTAS").insert({
               tp_jogo: "ROULETTE_PLAYTECH",
               ds_resultado_mesa: `NUM:${num}`,
@@ -661,100 +754,80 @@ async function setupPlaytechRoulette(context: BrowserContext, browser: any) {
               tp_status: isWin ? "WIN" : "LOSS",
               vl_lucro_perda: resultValue,
             });
-            console.log(
-              `💰 [PLAYTECH] ${isWin ? "WIN ✅" : "LOSS ❌"} | Lucro Global: R$ ${SessionManager.profit.toFixed(2)}`,
-            );
-
             await SessionManager.checkStops(browser);
-
             if (isWin) {
               martingaleStep = 0;
               apostaAtiva = null;
             } else {
               martingaleStep++;
-              if (martingaleStep > CONFIG.maxMartingale) {
-                martingaleStep = 0;
-                apostaAtiva = null;
-              } else {
+              if (martingaleStep <= CONFIG.maxMartingale) {
                 const novoValor =
-                  CONFIG.baseStake * Math.pow(2, martingaleStep);
+                  BotState.specs.ROULETTE_PLAYTECH.stake *
+                  Math.pow(2, martingaleStep);
                 apostaAtiva.valor = novoValor;
+                console.log(
+                  `🔁 [PLAYTECH] Gale ${martingaleStep}: Apostando R$ ${novoValor}`,
+                );
                 await executeRouletteStrike(apostaAtiva.lado, novoValor);
                 return;
+              } else {
+                martingaleStep = 0;
+                apostaAtiva = null;
               }
             }
           }
 
           console.log(
-            `\n🎰 [PLAYTECH] NÚMERO: ${num} | ${props.color.toUpperCase()} | ${props.parity.toUpperCase()}`,
+            `\n🎰 [PLAYTECH] NÚMERO: ${num} | ${props.color.toUpperCase()}`,
           );
+          const alvo = BotState.specs.ROULETTE_PLAYTECH.target;
+          const base = BotState.specs.ROULETTE_PLAYTECH.stake;
 
           if (props.color !== "zero") {
             colorDetector.addToHistory(props.color as any);
-            console.log(
-              `📊 [PLAYTECH] Cor: [ ${colorDetector.getHistory().join(" -> ")} ]`,
-            );
-
-            const trigger = colorDetector.checkTrigger(8);
+            const trigger = colorDetector.checkTrigger(alvo);
             if (trigger.isMatch && !isBetting && !apostaAtiva) {
               console.log(
-                `🎯 [PLAYTECH] GATILHO COR (8x)! Atacando ${trigger.target}`,
+                `🎯 [PLAYTECH] GATILHO COR ${alvo}X! Preparando tiro de R$ ${base} no oposto.`,
               );
               apostaAtiva = {
                 tipo: "color",
                 lado: trigger.target,
-                valor: CONFIG.baseStake,
+                valor: base,
               };
-              await executeRouletteStrike(
-                trigger.target as any,
-                CONFIG.baseStake,
-              );
+              await executeRouletteStrike(trigger.target as any, base);
               return;
             }
           }
 
           if (props.parity !== "zero") {
             parityDetector.addToHistory(props.parity as any);
-            console.log(
-              `📊 [PLAYTECH] Paridade: [ ${parityDetector.getHistory().join(" -> ")} ]`,
-            );
-
-            const trigger = parityDetector.checkTrigger(8);
+            const trigger = parityDetector.checkTrigger(alvo);
             if (trigger.isMatch && !isBetting && !apostaAtiva) {
               console.log(
-                `🎯 [PLAYTECH] GATILHO PARIDADE (8x)! Atacando ${trigger.target}`,
+                `🎯 [PLAYTECH] GATILHO PARIDADE ${alvo}X! Preparando tiro de R$ ${base} no oposto.`,
               );
               apostaAtiva = {
                 tipo: "parity",
                 lado: trigger.target,
-                valor: CONFIG.baseStake,
+                valor: base,
               };
-              await executeRouletteStrike(
-                trigger.target as any,
-                CONFIG.baseStake,
-              );
+              await executeRouletteStrike(trigger.target as any, base);
             }
           }
         }
-      } catch (e: any) {}
+      } catch (e) {}
     }, 2000);
   }
 
   await page.goto(PLAYTECH_COORDS.url);
   await page.waitForTimeout(15000);
-
   try {
-    await WindowManager.acquireLock(page, "PLAYTECH_LOBBY");
-    await page.mouse.click(PLAYTECH_COORDS.banca.x, PLAYTECH_COORDS.banca.y, {
-      delay: 150,
-    });
+    await WindowManager.acquireLock(page);
+    await page.mouse.click(PLAYTECH_COORDS.banca.x, PLAYTECH_COORDS.banca.y);
     await page.waitForTimeout(2000);
-    await page.mouse.click(PLAYTECH_COORDS.play.x, PLAYTECH_COORDS.play.y, {
-      delay: 150,
-    });
+    await page.mouse.click(PLAYTECH_COORDS.play.x, PLAYTECH_COORDS.play.y);
     await WindowManager.releaseLock();
-
-    await page.waitForTimeout(5000);
     isGameReady = true;
     await startMonitoring();
   } catch (err) {
@@ -764,10 +837,9 @@ async function setupPlaytechRoulette(context: BrowserContext, browser: any) {
 }
 
 // ==========================================
-// ORQUESTRADOR MESTRE E LOGIN
+// ORQUESTRADOR MESTRE
 // ==========================================
 async function runMultishield() {
-  // Inicia o Sincronizador Realtime antes de tudo
   await syncWithDashboard();
 
   const browser = await chromium.launch({
@@ -779,48 +851,35 @@ async function runMultishield() {
       "--disable-dev-shm-usage",
     ],
   });
-
   const context = await browser.newContext({
     viewport: { width: 1366, height: 768 },
-    permissions: ["geolocation"],
   });
-
   const mainPage = await context.newPage();
 
-  console.log("🔐 Realizando login mestre forçado...");
+  console.log("🔐 Realizando login mestre...");
   await mainPage.goto(EVOLUTION_TARGETS.FOOTBALL_STUDIO.url);
-
   try {
     await mainPage.click(".yes._button", { timeout: 5000 }).catch(() => {});
     await mainPage.waitForSelector('input[name="userName"]', {
       state: "visible",
       timeout: 15000,
     });
-
     await mainPage.fill('input[name="userName"]', CONFIG.user);
     await mainPage.fill('input[name="password"]', CONFIG.pass);
     await mainPage.click('button[type="submit"]');
-
-    console.log("⏳ Autenticando e injetando cookies de sessão...");
     await mainPage.waitForTimeout(10000);
     await mainPage.close();
 
-    console.log("🚀 Iniciando motores paralelos...");
-
+    console.log("🚀 Motores ONLINE...");
     await setupEvolutionGame(context, browser);
     await new Promise((r) => setTimeout(r, 5000));
-
     await setupPlaytechRoulette(context, browser);
     await new Promise((r) => setTimeout(r, 5000));
-
     await setupHacksawBaccarat(context, browser);
 
-    console.log("\n🛡️ BetShield MULTI-GAME ONLINE!");
-    console.log(
-      "📡 Sincronizado com Dashboard. Kill Switch e Pausas individuais ATIVOS.",
-    );
+    console.log("\n🛡️ BetShield MULTI-GAME SINCRONIZADO!");
   } catch (e: any) {
-    console.error("❌ Erro crítico no login mestre:", e.message);
+    console.error("❌ Erro:", e.message);
   }
 }
 
