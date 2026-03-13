@@ -845,23 +845,19 @@ async function setupPlaytechRoulette(context: BrowserContext, browser: any) {
 async function runMultishield() {
   await syncWithDashboard();
 
-  // 1. BLINDAGEM DO BROWSER PARA CONTAINER
+  // 1. BLINDAGEM DO BROWSER (Stealth Plugin já deve estar importado no topo do arquivo)
   const browser = await chromium.launch({
-    headless: true, // No docker, geralmente precisa ser true se não houver display virtual configurado
+    headless: true, // Necessário no Docker sem interface gráfica
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
-      "--disable-infobars",
-      "--window-position=0,0",
-      "--ignore-certifcate-errors",
-      "--ignore-certifcate-errors-spki-list",
-      "--disable-blink-features=AutomationControlled", // Essencial para burlar Cloudflare
+      "--disable-dev-shm-usage",
+      "--disable-blink-features=AutomationControlled",
     ],
   });
 
   const context = await browser.newContext({
     viewport: { width: 1366, height: 768 },
-    // Força um User-Agent de um navegador real de desktop
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   });
@@ -869,50 +865,36 @@ async function runMultishield() {
   const mainPage = await context.newPage();
 
   console.log("🔐 Realizando login mestre...");
-
   try {
-    // 2. NAVEGAÇÃO HUMANA: Vai para a Home primeiro, não para o jogo direto
-    await mainPage.goto(CONFIG.homeUrl, {
+    // 2. PASSO A PASSO IDÊNTICO AO CÓDIGO INDIVIDUAL
+    // A. Acessa a Home para registrar cookies iniciais
+    await mainPage.goto("https://betfast.bet.br/", {
       waitUntil: "domcontentloaded",
-      timeout: 60000,
+    });
+    await mainPage.click(".yes._button", { timeout: 5000 }).catch(() => {});
+
+    // B. Tenta entrar direto em um jogo (isso força a Betfast a abrir o modal de login)
+    await mainPage.goto(EVOLUTION_TARGETS.FOOTBALL_STUDIO.url, {
+      waitUntil: "domcontentloaded",
     });
 
-    // Fecha popup de maioridade/cookies se existir
-    await mainPage
-      .click(".yes._button, .btn-accept-cookies", { timeout: 5000 })
-      .catch(() => {});
-
-    // 3. FORÇA A ABERTURA DO MODAL DE LOGIN
-    // Clica no botão "Entrar" do cabeçalho caso o input não esteja visível
-    const isInputVisible = await mainPage.isVisible('input[name="userName"]');
-    if (!isInputVisible) {
-      console.log("🖱️ Clicando no botão de Login para abrir o modal...");
-      // Procura botões comuns de login (ajuste o texto se na Betfast for diferente, ex: "LOGIN")
-      const btnEntrar = mainPage
-        .locator('button:has-text("Entrar"), a:has-text("Entrar"), .login-btn')
-        .first();
-      await btnEntrar.click({ timeout: 5000 }).catch(() => {});
-    }
-
-    // 4. AGUARDA E PREENCHE
+    // C. Aguarda o modal injetado
     await mainPage.waitForSelector('input[name="userName"]', {
       state: "visible",
-      timeout: 15000,
+      timeout: 25000,
     });
 
+    // D. Preenche e Loga
     await mainPage.fill('input[name="userName"]', CONFIG.user);
     await mainPage.fill('input[name="password"]', CONFIG.pass);
     await mainPage.click('button[type="submit"]');
 
-    // Aguarda desaparecer o form de login (indica sucesso)
-    await mainPage.waitForSelector('input[name="userName"]', {
-      state: "hidden",
-      timeout: 15000,
-    });
-    console.log("✅ Autenticação concluída.");
-
+    // Aguarda o login processar (o modal some e o iframe do jogo carrega)
+    await mainPage.waitForTimeout(10000);
+    console.log("✅ Login Realizado.");
     await mainPage.close();
 
+    // 3. START DOS MOTORES
     console.log("🚀 Motores ONLINE...");
     await setupEvolutionGame(context, browser);
     await new Promise((r) => setTimeout(r, 5000));
@@ -923,13 +905,14 @@ async function runMultishield() {
     console.log("\n🛡️ BetShield MULTI-GAME SINCRONIZADO!");
   } catch (e: any) {
     console.error("❌ Erro crítico no login mestre:", e.message);
+
+    // Captura de tela para debug no container
     await mainPage.screenshot({
       path: "erro_login_container.png",
       fullPage: true,
     });
-    console.log(
-      "📸 Novo print salvo como 'erro_login_container.png'. Verifique o arquivo!",
-    );
+    console.log("📸 Print salvo como 'erro_login_container.png'.");
+
     await browser.close();
     process.exit(1);
   }
