@@ -847,12 +847,13 @@ async function runMultishield() {
 
   // 1. BLINDAGEM DO BROWSER (Stealth Plugin já deve estar importado no topo do arquivo)
   const browser = await chromium.launch({
-    headless: false, // Necessário no Docker sem interface gráfica
+    headless: true, // Necessário no Docker sem interface gráfica
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
       "--disable-blink-features=AutomationControlled",
+      "--headless=new",
     ],
   });
 
@@ -866,19 +867,18 @@ async function runMultishield() {
 
   console.log("🔐 Realizando login mestre...");
   try {
-    // 2. PASSO A PASSO IDÊNTICO AO CÓDIGO INDIVIDUAL
     // A. Acessa a Home para registrar cookies iniciais
-    await mainPage.goto("https://betfast.bet.br/", {
-      waitUntil: "domcontentloaded",
-    });
+    await mainPage.goto("https://betfast.bet.br/");
+
+    // Fecha popup (não quebra se não existir)
     await mainPage.click(".yes._button", { timeout: 5000 }).catch(() => {});
 
-    // B. Tenta entrar direto em um jogo (isso força a Betfast a abrir o modal de login)
-    await mainPage.goto(EVOLUTION_TARGETS.FOOTBALL_STUDIO.url, {
-      waitUntil: "domcontentloaded",
-    });
+    // B. Força o login usando o jogo da Hacksaw (Já validado no seu script anterior)
+    await mainPage.goto(
+      "https://betfast.bet.br/br/casino/gamepage?gameid=25383",
+    );
 
-    // C. Aguarda o modal injetado
+    // C. Aguarda o modal injetado com folga de tempo
     await mainPage.waitForSelector('input[name="userName"]', {
       state: "visible",
       timeout: 25000,
@@ -889,9 +889,9 @@ async function runMultishield() {
     await mainPage.fill('input[name="password"]', CONFIG.pass);
     await mainPage.click('button[type="submit"]');
 
-    // Aguarda o login processar (o modal some e o iframe do jogo carrega)
+    // Aguarda o login processar
     await mainPage.waitForTimeout(10000);
-    console.log("✅ Login Realizado.");
+    console.log("✅ Login Realizado com Sucesso.");
     await mainPage.close();
 
     // 3. START DOS MOTORES
