@@ -847,7 +847,7 @@ async function runMultishield() {
 
   // 1. BLINDAGEM DO BROWSER (Stealth Plugin já deve estar importado no topo do arquivo)
   const browser = await chromium.launch({
-    headless: true, // Necessário no Docker sem interface gráfica
+    headless: false, // Necessário no Docker sem interface gráfica
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
