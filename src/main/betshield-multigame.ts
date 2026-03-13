@@ -1,10 +1,13 @@
 import { createClient } from "@supabase/supabase-js";
 import * as dotenv from "dotenv";
-import { BrowserContext, chromium, Page } from "playwright";
+import { BrowserContext, Page } from "playwright";
+import { chromium } from "playwright-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { MultigamePatternDetector } from "../core/engine/PatternDetector.js";
 import { RouletteLogic } from "../core/engine/RouletteLogic.js";
 
 dotenv.config();
+chromium.use(StealthPlugin());
 
 // ==========================================
 // 1. CONFIGURAÇÕES GLOBAIS E REGRAS
@@ -849,6 +852,7 @@ async function runMultishield() {
       "--disable-backgrounding-occluded-windows",
       "--disable-renderer-backgrounding",
       "--disable-dev-shm-usage",
+      "--no-sandbox",
     ],
   });
   const context = await browser.newContext({
@@ -857,16 +861,25 @@ async function runMultishield() {
   const mainPage = await context.newPage();
 
   console.log("🔐 Realizando login mestre...");
-  await mainPage.goto(EVOLUTION_TARGETS.FOOTBALL_STUDIO.url);
+  await mainPage.goto(EVOLUTION_TARGETS.FOOTBALL_STUDIO.url, {
+    waitUntil: "domcontentloaded",
+  });
+
   try {
+    // Fecha possível popup de maioridade
     await mainPage.click(".yes._button", { timeout: 5000 }).catch(() => {});
+
+    // Aumentamos o tempo para 25s por conta do delay de rede em containers
     await mainPage.waitForSelector('input[name="userName"]', {
       state: "visible",
-      timeout: 15000,
+      timeout: 25000,
     });
+
     await mainPage.fill('input[name="userName"]', CONFIG.user);
     await mainPage.fill('input[name="password"]', CONFIG.pass);
     await mainPage.click('button[type="submit"]');
+
+    // Espera a navegação de login concluir
     await mainPage.waitForTimeout(10000);
     await mainPage.close();
 
@@ -879,7 +892,19 @@ async function runMultishield() {
 
     console.log("\n🛡️ BetShield MULTI-GAME SINCRONIZADO!");
   } catch (e: any) {
-    console.error("❌ Erro:", e.message);
+    // === SISTEMA DE DEBUG VISUAL ===
+    console.error("❌ Erro crítico no login mestre:", e.message);
+    console.log("📸 Capturando tela do erro para análise...");
+    await mainPage.screenshot({
+      path: "erro_login_container.png",
+      fullPage: true,
+    });
+    console.log(
+      "✅ Print salvo como 'erro_login_container.png' na raiz do container.",
+    );
+
+    await browser.close();
+    process.exit(1);
   }
 }
 
